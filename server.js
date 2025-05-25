@@ -6,6 +6,21 @@ import "dotenv/config";
 const app = express();
 const port = process.env.PORT || 3000;
 const apiKey = process.env.OPENAI_API_KEY;
+const model = process.env.OPENAI_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+
+// プロンプトファイルを読み込む関数
+function loadSystemPrompts() {
+  try {
+    console.log(`プロンプトファイルを読み込み中: ./prompts.json`);
+    const promptsData = fs.readFileSync('./prompts.json', 'utf-8');
+    return JSON.parse(promptsData);
+  } catch (error) {
+    console.error('プロンプトファイルの読み込みに失敗しました:', error);
+    return {
+      default: "あなたは親切で丁寧なAIアシスタントです。ユーザーの質問に対して分かりやすく回答してください。"
+    };
+  }
+}
 
 // Configure Vite middleware for React client
 const vite = await createViteServer({
@@ -17,6 +32,10 @@ app.use(vite.middlewares);
 // API route for token generation
 app.get("/token", async (req, res) => {
   try {
+    const prompts = loadSystemPrompts();
+    const promptType = req.query.prompt || 'default';
+    const instructions = prompts[promptType] || prompts.default; 
+
     const response = await fetch(
       "https://api.openai.com/v1/realtime/sessions",
       {
@@ -26,8 +45,9 @@ app.get("/token", async (req, res) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-4o-realtime-preview-2024-12-17",
+          model: model,
           voice: "verse",
+          instructions: instructions,
         }),
       },
     );
