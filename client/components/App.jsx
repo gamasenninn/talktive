@@ -272,8 +272,8 @@ export default function App() {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    //const baseUrl = "https://api.openai.com/v1/realtime";
-    const baseUrl = "gpt-4o-mini-realtime-preview-2024-12-17";
+    const baseUrl = "https://api.openai.com/v1/realtime";
+    //const baseUrl = "gpt-4o-mini-realtime-preview-2024-12-17";
     const sdpResponse = await fetch(`${baseUrl}?model=${selectedModel}`, {
       method: "POST",
       body: offer.sdp,
