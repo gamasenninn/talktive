@@ -8,41 +8,83 @@ export default function App() {
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [events, setEvents] = useState([]);
   const [dataChannel, setDataChannel] = useState(null);
+  const [vadThreshold, setVadThreshold] = useState(0.5);
   const [isPushToTalkEnabled, setIsPushToTalkEnabled] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const peerConnection = useRef(null);
   const audioElement = useRef(null);
   const localStream = useRef(null);
   const spaceKeyTimer = useRef(null);
-  const isRecordingRef = useRef(false); // 状態をrefでも管理
+  const isRecordingRef = useRef(false);
   const defaultModel = import.meta.env.VITE_OPENAI_MODEL || "gpt-4o-realtime-preview-2024-12-17";
   const [selectedModel, setSelectedModel] = useState(defaultModel);
 
-  // 録音開始
-  const startRecording = useCallback(() => {
-    if (!isSessionActive || !dataChannel || isRecordingRef.current) {
-      console.log("❌ Cannot start recording:", { isSessionActive, hasDataChannel: !!dataChannel, isRecording: isRecordingRef.current });
-      return;
+  // Send a message to the model
+  const sendClientEvent = useCallback((message) => {
+    if (dataChannel) {
+      const timestamp = new Date().toLocaleTimeString();
+      const messageWithId = {
+        ...message,
+        event_id: message.event_id || crypto.randomUUID()
+      };
+
+      // send event before setting timestamp since the backend peer doesn't expect this field
+      dataChannel.send(JSON.stringify(messageWithId));
+      console.log("📤 Sent event:", messageWithId.type);
+
+      // if guard just in case the timestamp exists by miracle
+      if (!messageWithId.timestamp) {
+        messageWithId.timestamp = timestamp;
+      }
+      setEvents((prev) => [messageWithId, ...prev]);
+    } else {
+      console.error(
+        "Failed to send message - no data channel available",
+        message,
+      );
     }
-    
-    console.log("📢 startRecording called");
-    isRecordingRef.current = true;
-    setIsRecording(true);
-    
-    // マイクを有効にする
-    toggleMicrophone(true);
-    
-    // 5秒後に自動的に停止するタイマーを設定（安全装置）
-    if (spaceKeyTimer.current) {
-      clearTimeout(spaceKeyTimer.current);
+  }, [dataChannel]);
+
+  // マイクの有効/無効を切り替える
+  const toggleMicrophone = useCallback((enabled) => {
+    if (localStream.current) {
+      const audioTrack = localStream.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = enabled;
+        console.log(`🎤 Microphone ${enabled ? 'enabled' : 'disabled'}`);
+      } else {
+        console.log("❌ No audio track found");
+      }
+    } else {
+      console.log("❌ No local stream found");
     }
-    spaceKeyTimer.current = setTimeout(() => {
-      console.log("⏰ Timer: Auto-stopping recording after 5 seconds");
-      stopRecording();
-    }, 5000);
-    
-    console.log("✅ Recording started");
-  }, [isSessionActive, dataChannel]);
+  }, []);
+
+  // VAD設定を送信する関数
+  const updateVADSettings = useCallback(() => {
+    if (dataChannel && dataChannel.readyState === 'open' && !isPushToTalkEnabled) {
+      console.log(`🎛️ Updating VAD threshold to: ${vadThreshold}`);
+      const vadEvent = {
+        type: "session.update",
+        session: {
+          input_audio_transcription: {
+            model: "whisper-1"
+          },
+          turn_detection: {
+            type: "server_vad",
+            threshold: vadThreshold,
+            prefix_padding_ms: 300,
+            silence_duration_ms: vadThreshold > 0.7 ? 1000 : 500 // 高いスレッショルド時は長い無音時間
+          }
+        }
+      };
+      
+      sendClientEvent(vadEvent);
+      console.log(`✅ VAD settings sent: threshold=${vadThreshold}, silence_duration=${vadThreshold > 0.7 ? 1000 : 500}ms`);
+    } else {
+      console.log(`❌ Cannot update VAD settings - Push-to-Talk: ${isPushToTalkEnabled}, DataChannel: ${dataChannel?.readyState}`);
+    }
+  }, [dataChannel, vadThreshold, sendClientEvent, isPushToTalkEnabled]);
 
   // 録音停止
   const stopRecording = useCallback(() => {
@@ -71,7 +113,33 @@ export default function App() {
     });
     
     console.log("🛑 Recording stopped");
-  }, []);
+  }, [toggleMicrophone, sendClientEvent]);
+
+  // 録音開始
+  const startRecording = useCallback(() => {
+    if (!isSessionActive || !dataChannel || isRecordingRef.current) {
+      console.log("❌ Cannot start recording:", { isSessionActive, hasDataChannel: !!dataChannel, isRecording: isRecordingRef.current });
+      return;
+    }
+    
+    console.log("📢 startRecording called");
+    isRecordingRef.current = true;
+    setIsRecording(true);
+    
+    // マイクを有効にする
+    toggleMicrophone(true);
+    
+    // 5秒後に自動的に停止するタイマーを設定（安全装置）
+    if (spaceKeyTimer.current) {
+      clearTimeout(spaceKeyTimer.current);
+    }
+    spaceKeyTimer.current = setTimeout(() => {
+      console.log("⏰ Timer: Auto-stopping recording after 5 seconds");
+      stopRecording();
+    }, 5000);
+    
+    console.log("✅ Recording started");
+  }, [isSessionActive, dataChannel, toggleMicrophone, stopRecording]);
 
   // キーボードイベントの処理
   useEffect(() => {
@@ -123,23 +191,8 @@ export default function App() {
     };
   }, [isPushToTalkEnabled, isSessionActive, startRecording, stopRecording]);
 
-  // マイクの有効/無効を切り替える
-  const toggleMicrophone = (enabled) => {
-    if (localStream.current) {
-      const audioTrack = localStream.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = enabled;
-        console.log(`🎤 Microphone ${enabled ? 'enabled' : 'disabled'}`);
-      } else {
-        console.log("❌ No audio track found");
-      }
-    } else {
-      console.log("❌ No local stream found");
-    }
-  };
-
   // Push-to-Talkモードの切り替え
-  const togglePushToTalk = () => {
+  const togglePushToTalk = useCallback(() => {
     const newMode = !isPushToTalkEnabled;
     setIsPushToTalkEnabled(newMode);
     
@@ -161,7 +214,7 @@ export default function App() {
       // 常時録音モード: マイクを有効にする
       toggleMicrophone(true);
     }
-  };
+  }, [isPushToTalkEnabled, toggleMicrophone]);
 
   async function startSession() {
     console.log("🚀 Starting session...");
@@ -177,7 +230,21 @@ export default function App() {
     // Set up to play remote audio from the model
     audioElement.current = document.createElement("audio");
     audioElement.current.autoplay = true;
-    pc.ontrack = (e) => (audioElement.current.srcObject = e.streams[0]);
+    audioElement.current.volume = 1.0; // 音量を明示的に設定
+    console.log("🔊 Audio element created:", audioElement.current);
+    
+    pc.ontrack = (e) => {
+      console.log("📡 Received audio track:", e.streams[0]);
+      audioElement.current.srcObject = e.streams[0];
+      console.log("🔊 Audio source set:", audioElement.current.srcObject);
+      
+      // 音声再生を強制的に開始
+      audioElement.current.play().then(() => {
+        console.log("✅ Audio playback started successfully");
+      }).catch((error) => {
+        console.error("❌ Audio playback failed:", error);
+      });
+    };
 
     // Add local audio track for microphone input in the browser
     const ms = await navigator.mediaDevices.getUserMedia({
@@ -205,7 +272,8 @@ export default function App() {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    const baseUrl = "https://api.openai.com/v1/realtime";
+    //const baseUrl = "https://api.openai.com/v1/realtime";
+    const baseUrl = "gpt-4o-mini-realtime-preview-2024-12-17";
     const sdpResponse = await fetch(`${baseUrl}?model=${selectedModel}`, {
       method: "POST",
       body: offer.sdp,
@@ -247,13 +315,12 @@ export default function App() {
       localStream.current = null;
     }
 
-    peerConnection.current.getSenders().forEach((sender) => {
-      if (sender.track) {
-        sender.track.stop();
-      }
-    });
-
     if (peerConnection.current) {
+      peerConnection.current.getSenders().forEach((sender) => {
+        if (sender.track) {
+          sender.track.stop();
+        }
+      });
       peerConnection.current.close();
     }
 
@@ -262,31 +329,8 @@ export default function App() {
     peerConnection.current = null;
   }
 
-  // Send a message to the model
-  function sendClientEvent(message) {
-    if (dataChannel) {
-      const timestamp = new Date().toLocaleTimeString();
-      message.event_id = message.event_id || crypto.randomUUID();
-
-      // send event before setting timestamp since the backend peer doesn't expect this field
-      dataChannel.send(JSON.stringify(message));
-      console.log("📤 Sent event:", message.type);
-
-      // if guard just in case the timestamp exists by miracle
-      if (!message.timestamp) {
-        message.timestamp = timestamp;
-      }
-      setEvents((prev) => [message, ...prev]);
-    } else {
-      console.error(
-        "Failed to send message - no data channel available",
-        message,
-      );
-    }
-  }
-
   // Send a text message to the model
-  function sendTextMessage(message) {
+  const sendTextMessage = useCallback((message) => {
     const event = {
       type: "conversation.item.create",
       item: {
@@ -303,7 +347,7 @@ export default function App() {
 
     sendClientEvent(event);
     sendClientEvent({ type: "response.create" });
-  }
+  }, [sendClientEvent]);
 
   // Attach event listeners to the data channel when a new one is created
   useEffect(() => {
@@ -323,9 +367,20 @@ export default function App() {
         console.log("🔗 Data channel opened");
         setIsSessionActive(true);
         setEvents([]);
+        // データチャンネルが開いたらVAD設定を送信
+        setTimeout(() => {
+          updateVADSettings();
+        }, 100);
       });
     }
-  }, [dataChannel]);
+  }, [dataChannel, updateVADSettings]);
+
+  // VADスレッショルドが変更されたときに設定を更新
+  useEffect(() => {
+    if (isSessionActive) {
+      updateVADSettings();
+    }
+  }, [vadThreshold, isSessionActive, updateVADSettings]);
 
   return (
     <>
@@ -379,6 +434,99 @@ export default function App() {
           </section>
         </section>
         <section className="absolute top-0 w-[380px] right-0 bottom-0 p-4 pt-0 overflow-y-auto">
+          {/* VADスレッショルド調整UI */}
+          <div className="bg-gray-50 rounded-md p-4 mb-4">
+            <h3 className="text-sm font-semibold mb-2">マイク感度設定</h3>
+            {isPushToTalkEnabled && (
+              <div className="bg-yellow-100 border border-yellow-300 rounded p-2 mb-2">
+                <p className="text-xs text-yellow-800">
+                  ⚠️ Push-to-Talkモード中はVAD設定は無効です
+                </p>
+              </div>
+            )}
+            <div className={`flex flex-col gap-2 ${isPushToTalkEnabled ? 'opacity-50' : ''}`}>
+              <label className="text-xs text-gray-600">
+                VADスレッショルド: {vadThreshold.toFixed(2)}
+                {vadThreshold <= 0.2 && " (超高感度)"}
+                {vadThreshold > 0.2 && vadThreshold <= 0.5 && " (高感度)"}
+                {vadThreshold > 0.5 && vadThreshold <= 0.8 && " (中感度)"}
+                {vadThreshold > 0.8 && vadThreshold < 0.95 && " (低感度)"}
+                {vadThreshold >= 0.95 && vadThreshold < 1.0 && " (超低感度・要調整)"}
+                {vadThreshold >= 1.0 && " (無効)"}
+              </label>
+              <input
+                type="range"
+                min="0.0"
+                max="1.0"
+                step="0.01"
+                value={vadThreshold}
+                onChange={(e) => setVadThreshold(parseFloat(e.target.value))}
+                className="w-full"
+                disabled={isPushToTalkEnabled}
+              />
+              <div className="flex justify-between text-xs text-gray-500">
+                <span>超高感度<br/>0.0</span>
+                <span>中間<br/>0.5</span>
+                <span>調整範囲<br/>0.95-1.0</span>
+              </div>
+              <p className="text-xs text-gray-600 mt-1">
+                0.95-1.00の範囲で細かく調整してください。1.00で完全無効化。
+              </p>
+              {vadThreshold >= 0.95 && (
+                <div className="bg-blue-50 border border-blue-200 rounded p-2">
+                  <p className="text-xs text-blue-800">
+                    💡 現在は超低感度域です。0.96-0.99で最適値を見つけてください。
+                  </p>
+                </div>
+              )}
+              <div className="flex gap-1 mt-2">
+                <button
+                  onClick={() => setVadThreshold(0.96)}
+                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
+                  disabled={isPushToTalkEnabled}
+                >
+                  0.96
+                </button>
+                <button
+                  onClick={() => setVadThreshold(0.97)}
+                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
+                  disabled={isPushToTalkEnabled}
+                >
+                  0.97
+                </button>
+                <button
+                  onClick={() => setVadThreshold(0.98)}
+                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
+                  disabled={isPushToTalkEnabled}
+                >
+                  0.98
+                </button>
+                <button
+                  onClick={() => setVadThreshold(0.99)}
+                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
+                  disabled={isPushToTalkEnabled}
+                >
+                  0.99
+                </button>
+                <button
+                  onClick={() => setVadThreshold(1.00)}
+                  className="px-2 py-1 text-xs bg-red-200 hover:bg-red-300 rounded"
+                  disabled={isPushToTalkEnabled}
+                >
+                  1.00
+                </button>
+              </div>
+              {isSessionActive && !isPushToTalkEnabled && (
+                <button
+                  onClick={() => updateVADSettings()}
+                  className="mt-2 px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600"
+                >
+                  設定を再送信
+                </button>
+              )}
+            </div>
+          </div>
+              
           <ToolPanel
             sendClientEvent={sendClientEvent}
             sendTextMessage={sendTextMessage}
