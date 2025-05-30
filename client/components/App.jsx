@@ -18,6 +18,9 @@ export default function App() {
   const isRecordingRef = useRef(false);
   const defaultModel = import.meta.env.VITE_OPENAI_MODEL || "gpt-4o-realtime-preview-2024-12-17";
   const [selectedModel, setSelectedModel] = useState(defaultModel);
+  
+  // 環境変数からPush-to-Talk制限時間を取得（デフォルト5秒）
+  const pushToTalkTimeLimit = parseInt(import.meta.env.VITE_PUSH_TO_TALK_TIME_LIMIT) || 5000;
 
   // Send a message to the model
   const sendClientEvent = useCallback((message) => {
@@ -129,17 +132,17 @@ export default function App() {
     // マイクを有効にする
     toggleMicrophone(true);
     
-    // 5秒後に自動的に停止するタイマーを設定（安全装置）
+    // 環境変数で設定された時間後に自動的に停止するタイマーを設定（安全装置）
     if (spaceKeyTimer.current) {
       clearTimeout(spaceKeyTimer.current);
     }
     spaceKeyTimer.current = setTimeout(() => {
-      console.log("⏰ Timer: Auto-stopping recording after 5 seconds");
+      console.log(`⏰ Timer: Auto-stopping recording after ${pushToTalkTimeLimit}ms`);
       stopRecording();
-    }, 5000);
+    }, pushToTalkTimeLimit);
     
-    console.log("✅ Recording started");
-  }, [isSessionActive, dataChannel, toggleMicrophone, stopRecording]);
+    console.log(`✅ Recording started (auto-stop in ${pushToTalkTimeLimit}ms)`);
+  }, [isSessionActive, dataChannel, toggleMicrophone, stopRecording, pushToTalkTimeLimit]);
 
   // キーボードイベントの処理
   useEffect(() => {
@@ -405,7 +408,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <div className={`w-3 h-3 rounded-full ${isRecording ? 'bg-red-500' : 'bg-gray-300'}`}></div>
                 <span className="text-sm">
-                  {isRecording ? '録音中（5秒で自動停止）' : 'スペースキーを押して話す'}
+                  {isRecording ? `録音中（${pushToTalkTimeLimit/1000}秒で自動停止）` : 'スペースキーを押して話す'}
                 </span>
               </div>
             )}
