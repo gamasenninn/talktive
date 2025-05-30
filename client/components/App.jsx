@@ -8,7 +8,6 @@ export default function App() {
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [events, setEvents] = useState([]);
   const [dataChannel, setDataChannel] = useState(null);
-  const [vadThreshold, setVadThreshold] = useState(0.5);
   const [isPushToTalkEnabled, setIsPushToTalkEnabled] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const peerConnection = useRef(null);
@@ -21,6 +20,15 @@ export default function App() {
   
   // 環境変数からPush-to-Talk制限時間を取得（デフォルト5秒）
   const pushToTalkTimeLimit = parseInt(import.meta.env.VITE_PUSH_TO_TALK_TIME_LIMIT) || 5000;
+  
+  // 環境変数からVADスレッショルド設定を取得
+  const vadThresholdDefault = parseFloat(import.meta.env.VITE_VAD_THRESHOLD_DEFAULT) || 0.5;
+  const vadThresholdMin = parseFloat(import.meta.env.VITE_VAD_THRESHOLD_MIN) || 0.0;
+  const vadThresholdMax = parseFloat(import.meta.env.VITE_VAD_THRESHOLD_MAX) || 1.0;
+  const vadThresholdStep = parseFloat(import.meta.env.VITE_VAD_THRESHOLD_STEP) || 0.01;
+  
+  // VADスレッショルドの初期値を環境変数から設定
+  const [vadThreshold, setVadThreshold] = useState(vadThresholdDefault);
 
   // Send a message to the model
   const sendClientEvent = useCallback((message) => {
@@ -66,7 +74,7 @@ export default function App() {
   // VAD設定を送信する関数
   const updateVADSettings = useCallback(() => {
     if (dataChannel && dataChannel.readyState === 'open' && !isPushToTalkEnabled) {
-      console.log(`🎛️ Updating VAD threshold to: ${vadThreshold}`);
+      console.log(`🎛️ Updating VAD threshold to: ${vadThreshold} (env default: ${vadThresholdDefault})`);
       const vadEvent = {
         type: "session.update",
         session: {
@@ -87,7 +95,7 @@ export default function App() {
     } else {
       console.log(`❌ Cannot update VAD settings - Push-to-Talk: ${isPushToTalkEnabled}, DataChannel: ${dataChannel?.readyState}`);
     }
-  }, [dataChannel, vadThreshold, sendClientEvent, isPushToTalkEnabled]);
+  }, [dataChannel, vadThreshold, sendClientEvent, isPushToTalkEnabled, vadThresholdDefault]);
 
   // 録音停止
   const stopRecording = useCallback(() => {
@@ -218,6 +226,21 @@ export default function App() {
       toggleMicrophone(true);
     }
   }, [isPushToTalkEnabled, toggleMicrophone]);
+
+  // VADスレッショルドをデフォルト値にリセットする関数
+  const resetVadThreshold = useCallback(() => {
+    setVadThreshold(vadThresholdDefault);
+    console.log(`🔄 VAD threshold reset to default: ${vadThresholdDefault}`);
+  }, [vadThresholdDefault]);
+
+  // VADスレッショルドのバリデーション
+  const validateAndSetVadThreshold = useCallback((value) => {
+    const clampedValue = Math.max(vadThresholdMin, Math.min(vadThresholdMax, value));
+    setVadThreshold(clampedValue);
+    if (value !== clampedValue) {
+      console.warn(`⚠️ VAD threshold clamped from ${value} to ${clampedValue} (range: ${vadThresholdMin}-${vadThresholdMax})`);
+    }
+  }, [vadThresholdMin, vadThresholdMax]);
 
   async function startSession() {
     console.log("🚀 Starting session...");
@@ -385,6 +408,16 @@ export default function App() {
     }
   }, [vadThreshold, isSessionActive, updateVADSettings]);
 
+  // 感度レベルの判定関数
+  const getSensitivityLevel = (threshold) => {
+    if (threshold <= 0.2) return "超高感度";
+    if (threshold <= 0.5) return "高感度";
+    if (threshold <= 0.8) return "中感度";
+    if (threshold < 0.95) return "低感度";
+    if (threshold < 1.0) return "超低感度・要調整";
+    return "無効";
+  };
+
   return (
     <>
       <nav className="absolute top-0 left-0 right-0 h-16 flex items-center">
@@ -439,7 +472,27 @@ export default function App() {
         <section className="absolute top-0 w-[380px] right-0 bottom-0 p-4 pt-0 overflow-y-auto">
           {/* VADスレッショルド調整UI */}
           <div className="bg-gray-50 rounded-md p-4 mb-4">
-            <h3 className="text-sm font-semibold mb-2">マイク感度設定</h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold">マイク感度設定</h3>
+              <button
+                onClick={resetVadThreshold}
+                className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
+                disabled={isPushToTalkEnabled}
+                title={`デフォルト値 (${vadThresholdDefault}) にリセット`}
+              >
+                リセット
+              </button>
+            </div>
+            
+            {/* 環境変数情報表示 */}
+            <div className="bg-blue-50 border border-blue-200 rounded p-2 mb-2">
+              <p className="text-xs text-blue-800">
+                🔧 設定範囲: {vadThresholdMin} - {vadThresholdMax} (ステップ: {vadThresholdStep})
+                <br/>
+                📋 デフォルト値: {vadThresholdDefault}
+              </p>
+            </div>
+            
             {isPushToTalkEnabled && (
               <div className="bg-yellow-100 border border-yellow-300 rounded p-2 mb-2">
                 <p className="text-xs text-yellow-800">
@@ -449,31 +502,25 @@ export default function App() {
             )}
             <div className={`flex flex-col gap-2 ${isPushToTalkEnabled ? 'opacity-50' : ''}`}>
               <label className="text-xs text-gray-600">
-                VADスレッショルド: {vadThreshold.toFixed(2)}
-                {vadThreshold <= 0.2 && " (超高感度)"}
-                {vadThreshold > 0.2 && vadThreshold <= 0.5 && " (高感度)"}
-                {vadThreshold > 0.5 && vadThreshold <= 0.8 && " (中感度)"}
-                {vadThreshold > 0.8 && vadThreshold < 0.95 && " (低感度)"}
-                {vadThreshold >= 0.95 && vadThreshold < 1.0 && " (超低感度・要調整)"}
-                {vadThreshold >= 1.0 && " (無効)"}
+                VADスレッショルド: {vadThreshold.toFixed(2)} ({getSensitivityLevel(vadThreshold)})
               </label>
               <input
                 type="range"
-                min="0.0"
-                max="1.0"
-                step="0.01"
+                min={vadThresholdMin}
+                max={vadThresholdMax}
+                step={vadThresholdStep}
                 value={vadThreshold}
-                onChange={(e) => setVadThreshold(parseFloat(e.target.value))}
+                onChange={(e) => validateAndSetVadThreshold(parseFloat(e.target.value))}
                 className="w-full"
                 disabled={isPushToTalkEnabled}
               />
               <div className="flex justify-between text-xs text-gray-500">
-                <span>超高感度<br/>0.0</span>
-                <span>中間<br/>0.5</span>
-                <span>調整範囲<br/>0.95-1.0</span>
+                <span>超高感度<br/>{vadThresholdMin}</span>
+                <span>中間<br/>{((vadThresholdMax + vadThresholdMin) / 2).toFixed(1)}</span>
+                <span>調整範囲<br/>{vadThresholdMax}</span>
               </div>
               <p className="text-xs text-gray-600 mt-1">
-                0.95-1.00の範囲で細かく調整してください。1.00で完全無効化。
+                環境変数で設定可能な範囲内で調整してください。
               </p>
               {vadThreshold >= 0.95 && (
                 <div className="bg-blue-50 border border-blue-200 rounded p-2">
@@ -483,41 +530,20 @@ export default function App() {
                 </div>
               )}
               <div className="flex gap-1 mt-2">
-                <button
-                  onClick={() => setVadThreshold(0.96)}
-                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
-                  disabled={isPushToTalkEnabled}
-                >
-                  0.96
-                </button>
-                <button
-                  onClick={() => setVadThreshold(0.97)}
-                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
-                  disabled={isPushToTalkEnabled}
-                >
-                  0.97
-                </button>
-                <button
-                  onClick={() => setVadThreshold(0.98)}
-                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
-                  disabled={isPushToTalkEnabled}
-                >
-                  0.98
-                </button>
-                <button
-                  onClick={() => setVadThreshold(0.99)}
-                  className="px-2 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded"
-                  disabled={isPushToTalkEnabled}
-                >
-                  0.99
-                </button>
-                <button
-                  onClick={() => setVadThreshold(1.00)}
-                  className="px-2 py-1 text-xs bg-red-200 hover:bg-red-300 rounded"
-                  disabled={isPushToTalkEnabled}
-                >
-                  1.00
-                </button>
+                {[0.96, 0.97, 0.98, 0.99, 1.00].filter(val => val >= vadThresholdMin && val <= vadThresholdMax).map(val => (
+                  <button
+                    key={val}
+                    onClick={() => validateAndSetVadThreshold(val)}
+                    className={`px-2 py-1 text-xs rounded ${
+                      val === 1.00 
+                        ? 'bg-red-200 hover:bg-red-300' 
+                        : 'bg-gray-200 hover:bg-gray-300'
+                    }`}
+                    disabled={isPushToTalkEnabled}
+                  >
+                    {val.toFixed(2)}
+                  </button>
+                ))}
               </div>
               {isSessionActive && !isPushToTalkEnabled && (
                 <button
