@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { perfMonitor, getWebRTCStats } from "../utils/performance";
 import logo from "/assets/openai-logomark.svg";
 import EventLog from "./EventLog";
 import SessionControls from "./SessionControls";
@@ -244,7 +245,9 @@ export default function App() {
 
   async function startSession() {
     console.log("🚀 Starting session...");
-    
+    perfMonitor.clearMetrics();
+    perfMonitor.startMemoryMonitoring();
+    const connectionStart = performance.now();  
     // Get a session token for OpenAI Realtime API
     const tokenResponse = await fetch("/token");
     const data = await tokenResponse.json();
@@ -258,7 +261,13 @@ export default function App() {
     audioElement.current.autoplay = true;
     audioElement.current.volume = 1.0; // 音量を明示的に設定
     console.log("🔊 Audio element created:", audioElement.current);
-    
+    // 現在のAudioContext設定を記録
+    if (window.AudioContext) {
+      const tempContext = new AudioContext();
+      perfMonitor.getAudioContextInfo(tempContext);
+      tempContext.close();
+    }
+
     pc.ontrack = (e) => {
       console.log("📡 Received audio track:", e.streams[0]);
       audioElement.current.srcObject = e.streams[0];
@@ -316,6 +325,9 @@ export default function App() {
     await pc.setRemoteDescription(answer);
 
     peerConnection.current = pc;
+    const connectionTime = performance.now() - connectionStart;
+    console.log(`⏱️ Total connection time: ${connectionTime.toFixed(2)}ms`);
+
   }
 
   // Stop current session, clean up peer connection and data channel
@@ -391,12 +403,13 @@ export default function App() {
       // Set session active when the data channel is opened
       dataChannel.addEventListener("open", () => {
         console.log("🔗 Data channel opened");
-        setIsSessionActive(true);
-        setEvents([]);
-        // データチャンネルが開いたらVAD設定を送信
+        const connectionEnd = performance.now();
+        console.log(`🚀 Session fully established`);
+        
+        // 初期WebRTC統計を取得
         setTimeout(() => {
-          updateVADSettings();
-        }, 100);
+          getWebRTCStats(peerConnection.current);
+        }, 1000);
       });
     }
   }, [dataChannel, updateVADSettings]);
